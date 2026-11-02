@@ -106,6 +106,7 @@ jobs:
                 private lateinit var heroSub: TextView
                 private lateinit var heroArt: ImageView
                 private lateinit var rows: LinearLayout
+                private var firstTile: View? = null
                 private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
                 private fun font(w: String) = Typeface.create(w, Typeface.NORMAL)
 
@@ -149,6 +150,7 @@ jobs:
                 override fun onResume() {
                     super.onResume()
                     rows.removeAllViews()
+                    firstTile = null
                     val pm = packageManager
                     val apps = listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)
                         .flatMap { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(it), 0) }
@@ -180,7 +182,7 @@ jobs:
                     }
                     val per = maxOf(3, ((resources.displayMetrics.widthPixels / resources.displayMetrics.density - 112) / 206).toInt())
                     apps.chunked(per).forEachIndexed { i, c -> addRow(if (i == 0) "Apps" else "", c) }; addRow("Inputs", inputs); addRow("Settings", settings)
-                    (rows.getChildAt(1) as? ViewGroup)?.let { ((it as HorizontalScrollView).getChildAt(0) as LinearLayout).getChildAt(0)?.requestFocus() }
+                    firstTile?.requestFocus()
                 }
 
                 private fun addRow(name: String, items: List<Item>) {
@@ -191,6 +193,7 @@ jobs:
                     })
                     val line = LinearLayout(this).apply { clipChildren = false; setPadding(dp(56), dp(10), dp(56), dp(14)) }
                     items.forEach { line.addView(tile(it)) }
+                    if (firstTile == null) firstTile = line.getChildAt(0)
                     rows.addView(HorizontalScrollView(this).apply {
                         isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(line)
                     })
