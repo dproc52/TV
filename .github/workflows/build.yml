@@ -1,0 +1,202 @@
+name: Build Aeria launcher
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Write project files
+        run: |
+            mkdir -p $(dirname app/build.gradle.kts)
+            cat > app/build.gradle.kts <<'EOF_0'
+            plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
+            android {
+                namespace = "com.aeria.launcher"
+                compileSdk = 34
+                defaultConfig { applicationId = "com.aeria.launcher"; minSdk = 22; targetSdk = 34; versionCode = 1; versionName = "1.0" }
+                compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+                kotlinOptions { jvmTarget = "17" }
+            }
+            EOF_0
+            mkdir -p $(dirname app/src/main/AndroidManifest.xml)
+            cat > app/src/main/AndroidManifest.xml <<'EOF_1'
+            <?xml version="1.0" encoding="utf-8"?>
+            <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+                <uses-feature android:name="android.software.leanback" android:required="false" />
+                <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+                <queries>
+                    <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent>
+                    <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>
+                </queries>
+                <application android:label="Aeria" android:icon="@drawable/icon" android:banner="@drawable/banner"
+                    android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+                    <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask">
+                        <intent-filter>
+                            <action android:name="android.intent.action.MAIN" />
+                            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                            <category android:name="android.intent.category.LAUNCHER" />
+                        </intent-filter>
+                        <intent-filter>
+                            <action android:name="android.intent.action.MAIN" />
+                            <category android:name="android.intent.category.HOME" />
+                            <category android:name="android.intent.category.DEFAULT" />
+                        </intent-filter>
+                    </activity>
+                </application>
+            </manifest>
+            EOF_1
+            mkdir -p $(dirname app/src/main/java/com/aeria/launcher/MainActivity.kt)
+            cat > app/src/main/java/com/aeria/launcher/MainActivity.kt <<'EOF_2'
+            package com.aeria.launcher
+
+            import android.animation.ValueAnimator
+            import android.app.Activity
+            import android.content.Intent
+            import android.content.pm.ResolveInfo
+            import android.graphics.Color
+            import android.graphics.Outline
+            import android.graphics.Typeface
+            import android.graphics.drawable.GradientDrawable
+            import android.os.Bundle
+            import android.view.Gravity
+            import android.view.View
+            import android.view.ViewOutlineProvider
+            import android.view.animation.DecelerateInterpolator
+            import android.widget.*
+
+            class MainActivity : Activity() {
+                private lateinit var row: LinearLayout
+                private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+                override fun onCreate(b: Bundle?) {
+                    super.onCreate(b)
+                    val root = FrameLayout(this)
+                    root.background = GradientDrawable(
+                        GradientDrawable.Orientation.TL_BR,
+                        intArrayOf(0xFF0B0F1E.toInt(), 0xFF2A2160.toInt(), 0xFF0F3A5F.toInt())
+                    )
+                    val col = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(88), dp(64), dp(0), dp(72))
+                    }
+                    col.addView(TextClock(this).apply {
+                        format12Hour = "h:mm"; format24Hour = "H:mm"
+                        textSize = 96f; setTextColor(Color.WHITE)
+                        typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
+                        includeFontPadding = false
+                    })
+                    col.addView(TextClock(this).apply {
+                        format12Hour = "EEEE, MMMM d"; format24Hour = "EEEE, MMMM d"
+                        textSize = 24f; setTextColor(0xB3FFFFFF.toInt())
+                        typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+                    })
+                    col.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+                    row = LinearLayout(this).apply { clipChildren = false; clipToPadding = false; setPadding(0, dp(32), dp(88), dp(48)) }
+                    col.addView(HorizontalScrollView(this).apply {
+                        isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false
+                        addView(row)
+                    })
+                    root.addView(col)
+                    setContentView(root)
+                }
+
+                override fun onResume() {
+                    super.onResume()
+                    row.removeAllViews()
+                    val pm = packageManager
+                    val apps = listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)
+                        .flatMap { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(it), 0) }
+                        .distinctBy { it.activityInfo.packageName }
+                        .filter { it.activityInfo.packageName != packageName }
+                        .sortedBy { it.loadLabel(pm).toString().lowercase() }
+                    apps.forEach { row.addView(tile(it)) }
+                    row.getChildAt(0)?.requestFocus()
+                }
+
+                private fun tile(app: ResolveInfo): View {
+                    val pm = packageManager
+                    val banner = app.activityInfo.loadBanner(pm)
+                    val card = FrameLayout(this).apply {
+                        background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(0x26FFFFFF) }
+                        outlineProvider = object : ViewOutlineProvider() {
+                            override fun getOutline(v: View, o: Outline) = o.setRoundRect(0, 0, v.width, v.height, dp(22).toFloat())
+                        }
+                        clipToOutline = true
+                        addView(ImageView(this@MainActivity).apply {
+                            if (banner != null) { setImageDrawable(banner); scaleType = ImageView.ScaleType.CENTER_CROP }
+                            else { setImageDrawable(app.loadIcon(pm)); scaleType = ImageView.ScaleType.FIT_CENTER; setPadding(dp(40), dp(24), dp(40), dp(24)) }
+                        }, FrameLayout.LayoutParams(-1, -1))
+                    }
+                    val label = TextView(this).apply {
+                        text = app.loadLabel(pm); textSize = 20f; setTextColor(Color.WHITE); alpha = 0f
+                        gravity = Gravity.CENTER; maxLines = 1
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        setPadding(0, dp(16), 0, 0)
+                    }
+                    return LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL; isFocusable = true; clipChildren = false
+                        addView(card, LinearLayout.LayoutParams(dp(288), dp(162)))
+                        addView(label)
+                        layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(32) }
+                        setOnClickListener { pm.getLaunchIntentForPackage(app.activityInfo.packageName)?.let { startActivity(it) } }
+                        setOnFocusChangeListener { v, f ->
+                            v.animate().scaleX(if (f) 1.12f else 1f).scaleY(if (f) 1.12f else 1f)
+                                .translationZ(if (f) dp(24).toFloat() else 0f).setDuration(220)
+                                .setInterpolator(DecelerateInterpolator()).start()
+                            label.animate().alpha(if (f) 1f else 0f).setDuration(220).start()
+                            card.background = GradientDrawable().apply {
+                                cornerRadius = dp(22).toFloat(); setColor(if (f) 0x40FFFFFF else 0x26FFFFFF)
+                            }
+                        }
+                    }
+                }
+
+                @Deprecated("Launcher stays on Home")
+                override fun onBackPressed() {}
+            }
+            EOF_2
+            mkdir -p $(dirname app/src/main/res/drawable/banner.xml)
+            cat > app/src/main/res/drawable/banner.xml <<'EOF_3'
+            <?xml version="1.0" encoding="utf-8"?>
+            <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+                <gradient android:startColor="#FF0B0F1E" android:endColor="#FF4B3FA8" android:angle="315" />
+            </shape>
+            EOF_3
+            mkdir -p $(dirname app/src/main/res/drawable/icon.xml)
+            cat > app/src/main/res/drawable/icon.xml <<'EOF_4'
+            <?xml version="1.0" encoding="utf-8"?>
+            <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+                <gradient android:startColor="#FF4B3FA8" android:endColor="#FF1FA2C7" android:angle="315" />
+            </shape>
+            EOF_4
+            mkdir -p $(dirname build.gradle.kts)
+            cat > build.gradle.kts <<'EOF_5'
+            plugins {
+                id("com.android.application") version "8.5.2" apply false
+                id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+            }
+            EOF_5
+            mkdir -p $(dirname settings.gradle.kts)
+            cat > settings.gradle.kts <<'EOF_6'
+            pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+            dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+            rootProject.name = "Aeria"
+            include(":app")
+            EOF_6
+      - run: gradle assembleDebug
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: app/build/outputs/apk/debug/app-debug.apk
