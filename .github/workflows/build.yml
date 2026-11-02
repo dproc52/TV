@@ -178,13 +178,14 @@ jobs:
                             }
                         }
                     }
-                    addRow("Apps", apps); addRow("Inputs", inputs); addRow("Settings", settings)
+                    val per = maxOf(3, ((resources.displayMetrics.widthPixels / resources.displayMetrics.density - 112) / 206).toInt())
+                    apps.chunked(per).forEachIndexed { i, c -> addRow(if (i == 0) "Apps" else "", c) }; addRow("Inputs", inputs); addRow("Settings", settings)
                     (rows.getChildAt(1) as? ViewGroup)?.let { ((it as HorizontalScrollView).getChildAt(0) as LinearLayout).getChildAt(0)?.requestFocus() }
                 }
 
                 private fun addRow(name: String, items: List<Item>) {
                     if (items.isEmpty()) return
-                    rows.addView(TextView(this).apply {
+                    if (name.isNotEmpty()) rows.addView(TextView(this).apply {
                         text = name; textSize = 20f; setTextColor(0xE6FFFFFF.toInt()); typeface = font("sans-serif-medium")
                         setPadding(dp(56), dp(10), 0, dp(6))
                     })
@@ -212,7 +213,7 @@ jobs:
                         else addView(TextView(context).apply {
                             text = item.title; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = font("sans-serif-light")
                         }, FrameLayout.LayoutParams(-1, -1))
-                        layoutParams = LinearLayout.LayoutParams(dp(220), dp(124)).apply { marginEnd = dp(18) }
+                        layoutParams = LinearLayout.LayoutParams(dp(190), dp(107)).apply { marginEnd = dp(16) }
                         setOnClickListener { item.go() }
                         setOnFocusChangeListener { v, f ->
                             foreground = if (f) ring else null
@@ -238,16 +239,24 @@ jobs:
             mkdir -p $(dirname app/src/main/res/drawable/banner.xml)
             cat > app/src/main/res/drawable/banner.xml <<'EOF_4'
             <?xml version="1.0" encoding="utf-8"?>
-            <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-                <gradient android:startColor="#FF0B0F1E" android:endColor="#FF4B3FA8" android:angle="315" />
-            </shape>
+            <vector xmlns:android="http://schemas.android.com/apk/res/android"
+                android:width="320dp" android:height="180dp" android:viewportWidth="320" android:viewportHeight="180">
+                <path android:fillColor="#141414" android:pathData="M0,0h320v180h-320z" />
+                <group android:pivotX="54" android:pivotY="54" android:scaleX="1.5" android:scaleY="1.5" android:translateX="106" android:translateY="36">
+                <path android:strokeColor="#E50914" android:strokeWidth="6" android:fillColor="#00000000" android:pathData="M54,54m-34,0a34,34 0 1,0 68,0a34,34 0 1,0 -68,0" />
+                <path android:strokeColor="#E50914" android:strokeWidth="6" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M54,14 L30,90 M54,14 L78,90 M26,66 L82,66" />
+                </group>
+            </vector>
             EOF_4
             mkdir -p $(dirname app/src/main/res/drawable/icon.xml)
             cat > app/src/main/res/drawable/icon.xml <<'EOF_5'
             <?xml version="1.0" encoding="utf-8"?>
-            <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
-                <gradient android:startColor="#FF4B3FA8" android:endColor="#FF1FA2C7" android:angle="315" />
-            </shape>
+            <vector xmlns:android="http://schemas.android.com/apk/res/android"
+                android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+                <path android:fillColor="#141414" android:pathData="M0,0h108v108h-108z" />
+                <path android:strokeColor="#E50914" android:strokeWidth="6" android:fillColor="#00000000" android:pathData="M54,54m-34,0a34,34 0 1,0 68,0a34,34 0 1,0 -68,0" />
+                <path android:strokeColor="#E50914" android:strokeWidth="6" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M54,14 L30,90 M54,14 L78,90 M26,66 L82,66" />
+            </vector>
             EOF_5
             mkdir -p $(dirname build.gradle.kts)
             cat > build.gradle.kts <<'EOF_6'
