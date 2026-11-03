@@ -25,7 +25,7 @@ jobs:
             android {
                 namespace = "com.aeria.launcher"
                 compileSdk = 34
-                defaultConfig { applicationId = "com.aeria.launcher"; minSdk = 22; targetSdk = 34; versionCode = 1; versionName = "1.0" }
+                defaultConfig { applicationId = "com.aeria.launcher"; minSdk = 22; targetSdk = 28; versionCode = 1; versionName = "1.0" }
                 compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
                 kotlinOptions { jvmTarget = "17" }
             }
@@ -34,6 +34,9 @@ jobs:
             cat > app/src/main/AndroidManifest.xml <<'EOF_1'
             <?xml version="1.0" encoding="utf-8"?>
             <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+                <uses-permission android:name="android.permission.READ_LOGS" />
+                <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+                <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
                 <uses-feature android:name="android.software.leanback" android:required="false" />
                 <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
                 <queries>
@@ -54,12 +57,97 @@ jobs:
                             <category android:name="android.intent.category.DEFAULT" />
                         </intent-filter>
                     </activity>
+                    <service android:name=".HomeKeyService" android:exported="false" />
+                    <receiver android:name=".BootReceiver" android:exported="true">
+                        <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+                    </receiver>
                     <activity android:name=".InputActivity" android:exported="false" />
                 </application>
             </manifest>
             EOF_1
+            mkdir -p $(dirname app/src/main/java/com/aeria/launcher/BootReceiver.kt)
+            cat > app/src/main/java/com/aeria/launcher/BootReceiver.kt <<'EOF_2'
+            package com.aeria.launcher
+
+            import android.content.BroadcastReceiver
+            import android.content.Context
+            import android.content.Intent
+            import android.os.Build
+
+            class BootReceiver : BroadcastReceiver() {
+                override fun onReceive(c: Context, i: Intent) {
+                    val s = Intent(c, HomeKeyService::class.java)
+                    if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(s) else c.startService(s)
+                }
+            }
+            EOF_2
+            mkdir -p $(dirname app/src/main/java/com/aeria/launcher/HomeKeyService.kt)
+            cat > app/src/main/java/com/aeria/launcher/HomeKeyService.kt <<'EOF_3'
+            package com.aeria.launcher
+
+            import android.app.Notification
+            import android.app.NotificationChannel
+            import android.app.NotificationManager
+            import android.app.Service
+            import android.content.Context
+            import android.content.Intent
+            import android.os.Build
+            import android.os.IBinder
+            import java.net.InetSocketAddress
+            import java.net.Socket
+
+            class HomeKeyService : Service() {
+                private var worker: Thread? = null
+
+                override fun onBind(i: Intent?): IBinder? = null
+
+                override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+                    startForeground(1, notification())
+                    if (worker == null) worker = Thread { watch() }.also { it.isDaemon = true; it.start() }
+                    return START_STICKY
+                }
+
+                private fun notification(): Notification {
+                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    return if (Build.VERSION.SDK_INT >= 26) {
+                        nm.createNotificationChannel(NotificationChannel("aeria", "Aeria", NotificationManager.IMPORTANCE_MIN))
+                        Notification.Builder(this, "aeria").setSmallIcon(R.drawable.icon).setContentTitle("Aeria Home").build()
+                    } else {
+                        Notification.Builder(this).setSmallIcon(R.drawable.icon).setContentTitle("Aeria Home").build()
+                    }
+                }
+
+                private fun watch() {
+                    var last = 0L
+                    while (true) {
+                        try {
+                            val p = Runtime.getRuntime().exec(arrayOf("logcat", "-b", "system", "-b", "events", "-v", "brief", "-T", "1"))
+                            p.inputStream.bufferedReader().forEachLine { l ->
+                                val hit = l.contains("handleShortPressOnHome") ||
+                                    (l.contains("am_focused_activity") && l.contains("com.amazon.tv.launcher"))
+                                val now = System.currentTimeMillis()
+                                if (hit && now - last > 600) { last = now; goHome() }
+                            }
+                        } catch (e: Exception) {}
+                        try { Thread.sleep(3000) } catch (e: InterruptedException) {}
+                    }
+                }
+
+                private fun goHome() {
+                    try {
+                        Socket().use { s ->
+                            s.connect(InetSocketAddress("127.0.0.1", 38275), 150)
+                            s.getOutputStream().write("home\n".toByteArray())
+                            s.getOutputStream().flush()
+                        }
+                        return
+                    } catch (e: Exception) {}
+                    startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                }
+            }
+            EOF_3
             mkdir -p $(dirname app/src/main/java/com/aeria/launcher/InputActivity.kt)
-            cat > app/src/main/java/com/aeria/launcher/InputActivity.kt <<'EOF_2'
+            cat > app/src/main/java/com/aeria/launcher/InputActivity.kt <<'EOF_4'
             package com.aeria.launcher
 
             import android.app.Activity
@@ -76,9 +164,9 @@ jobs:
                     tv.tune(id, TvContract.buildChannelUriForPassthroughInput(id))
                 }
             }
-            EOF_2
+            EOF_4
             mkdir -p $(dirname app/src/main/java/com/aeria/launcher/MainActivity.kt)
-            cat > app/src/main/java/com/aeria/launcher/MainActivity.kt <<'EOF_3'
+            cat > app/src/main/java/com/aeria/launcher/MainActivity.kt <<'EOF_5'
             package com.aeria.launcher
 
             import android.app.Activity
@@ -101,10 +189,14 @@ jobs:
             import android.view.animation.DecelerateInterpolator
             import android.widget.*
 
+            // PlayStation-style home: tabs on top, big square tiles that lift and light up when focused.
             class MainActivity : Activity() {
-                private class Item(val title: String, val art: Drawable?, val wide: Boolean, val go: () -> Unit)
+                private class Item(val title: String, val art: Drawable?, val go: () -> Unit)
 
                 private lateinit var rows: LinearLayout
+                private lateinit var tabs: List<TextView>
+                private var tab = 0
+                private var byPkg: Map<String, Item> = emptyMap()
                 private var firstTile: View? = null
                 private val prefs by lazy { getSharedPreferences("aeria", MODE_PRIVATE) }
                 private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -115,14 +207,25 @@ jobs:
                     val root = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
                         background = GradientDrawable(
-                            GradientDrawable.Orientation.TOP_BOTTOM,
-                            intArrayOf(0xFF0E1A3D.toInt(), 0xFF070B1A.toInt(), 0xFF03050C.toInt())
+                            GradientDrawable.Orientation.TL_BR,
+                            intArrayOf(0xFF0B2A6B.toInt(), 0xFF060D26.toInt(), 0xFF020410.toInt())
                         )
                     }
                     val bar = FrameLayout(this)
-                    bar.addView(TextView(this).apply {
-                        text = "Home"; textSize = 22f; setTextColor(Color.WHITE); typeface = font("sans-serif-medium")
-                    }, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL).apply { leftMargin = dp(60) })
+                    tabs = listOf("Home", "Inputs", "Settings").mapIndexed { i, n ->
+                        TextView(this).apply {
+                            text = n; textSize = 20f; isFocusable = true
+                            setPadding(dp(18), dp(8), dp(18), dp(8))
+                            setOnClickListener { select(i) }
+                            setOnFocusChangeListener { v, f ->
+                                v.background = if (f) GradientDrawable().apply { cornerRadius = dp(30).toFloat(); setColor(0x33FFFFFF) } else null
+                                if (f) select(i)
+                            }
+                        }
+                    }
+                    val left = LinearLayout(this)
+                    tabs.forEach { left.addView(it, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) }) }
+                    bar.addView(left, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL).apply { leftMargin = dp(42) })
                     val right = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
                     right.addView(TextClock(this).apply {
                         format12Hour = "h:mm"; format24Hour = "H:mm"; textSize = 20f
@@ -138,51 +241,75 @@ jobs:
                         }
                     }, LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginStart = dp(14) })
                     bar.addView(right, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(52) })
-                    root.addView(bar, LinearLayout.LayoutParams(-1, dp(64)))
+                    root.addView(bar, LinearLayout.LayoutParams(-1, dp(68)))
                     rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(0, 0, 0, dp(40)) }
                     root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled = false; clipChildren = false; addView(rows) }, LinearLayout.LayoutParams(-1, 0, 1f))
                     setContentView(root)
+                    val svc = Intent(this, HomeKeyService::class.java)
+                    if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
                 }
 
                 override fun onResume() {
                     super.onResume()
-                    rows.removeAllViews(); firstTile = null
                     val pm = packageManager
-                    val infos = listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)
+                    byPkg = listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)
                         .flatMap { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(it), 0) }
                         .distinctBy { it.activityInfo.packageName }
                         .filter { it.activityInfo.packageName != packageName }
                         .sortedBy { it.loadLabel(pm).toString().lowercase() }
-                    val byPkg = infos.associate { it.activityInfo.packageName to appItem(it) }
-                    val keys = listOf("netflix", "youtube", "disney", "avod", "apple", "wbd", "max", "spotify", "hulu", "plex")
-                    fun rank(p: String) = keys.indexOfFirst { p.contains(it) }.let { if (it < 0) 99 else it }
-                    val recent = prefs.getString("recent", "")!!.split(",").filter { byPkg.containsKey(it) }
-                    val fav = (recent + infos.map { it.activityInfo.packageName }.sortedBy { rank(it) })
-                        .distinct().take(6).mapNotNull { byPkg[it] }
-                    val tvm = getSystemService(Context.TV_INPUT_SERVICE) as TvInputManager
-                    val inputs = tvm.tvInputList.filter { it.isPassthroughInput }.map { i ->
-                        Item(i.loadLabel(this).toString(), null, false) {
-                            startActivity(Intent(this, InputActivity::class.java).putExtra("id", i.id))
+                        .associate { it.activityInfo.packageName to appItem(it) }
+                    render()
+                    (firstTile ?: tabs[tab]).requestFocus()
+                }
+
+                private fun select(i: Int) {
+                    if (i == tab && rows.childCount > 0) return
+                    tab = i
+                    render()
+                }
+
+                private fun render() {
+                    tabs.forEachIndexed { i, t ->
+                        t.setTextColor(if (i == tab) Color.WHITE else 0x8CFFFFFF.toInt())
+                        t.typeface = font(if (i == tab) "sans-serif-medium" else "sans-serif")
+                    }
+                    rows.removeAllViews(); firstTile = null
+                    when (tab) {
+                        0 -> {
+                            val keys = listOf("netflix", "youtube", "disney", "avod", "apple", "wbd", "max", "spotify", "hulu", "plex")
+                            fun rank(p: String) = keys.indexOfFirst { p.contains(it) }.let { if (it < 0) 99 else it }
+                            val recent = prefs.getString("recent", "")!!.split(",").filter { byPkg.containsKey(it) }
+                            val fav = (recent + byPkg.keys.sortedBy { rank(it) }).distinct().take(6).mapNotNull { byPkg[it] }
+                            addRow("Recent", fav, 140)
+                            val per = maxOf(4, ((resources.displayMetrics.widthPixels / resources.displayMetrics.density - 120) / 116).toInt())
+                            byPkg.values.toList().chunked(per).forEachIndexed { i, c -> addRow(if (i == 0) "All apps" else "", c, 100) }
+                        }
+                        1 -> {
+                            val tvm = getSystemService(Context.TV_INPUT_SERVICE) as TvInputManager
+                            val inputs = tvm.tvInputList.filter { it.isPassthroughInput }.map { i ->
+                                Item(i.loadLabel(this).toString(), null) {
+                                    startActivity(Intent(this, InputActivity::class.java).putExtra("id", i.id))
+                                }
+                            }
+                            if (inputs.isEmpty()) rows.addView(TextView(this).apply {
+                                text = "No HDMI or AV inputs found"; textSize = 18f; setTextColor(0xB3FFFFFF.toInt()); setPadding(dp(60), dp(24), 0, 0)
+                            })
+                            addRow("Inputs", inputs, 140)
+                        }
+                        else -> {
+                            val settings = listOf(
+                                "All settings" to "android.settings.SETTINGS", "Wi-Fi" to "android.settings.WIFI_SETTINGS",
+                                "Display" to "android.settings.DISPLAY_SETTINGS", "Sound" to "android.settings.SOUND_SETTINGS",
+                                "Bluetooth" to "android.settings.BLUETOOTH_SETTINGS", "Date and time" to "android.settings.DATE_SETTINGS"
+                            ).map { (name, action) -> Item(name, null) { open(action, name) } }
+                            addRow("Settings", settings, 140)
                         }
                     }
-                    val settings = listOf(
-                        "Wi-Fi" to "android.settings.WIFI_SETTINGS", "Display" to "android.settings.DISPLAY_SETTINGS",
-                        "Sound" to "android.settings.SOUND_SETTINGS", "Bluetooth" to "android.settings.BLUETOOTH_SETTINGS",
-                        "Date and time" to "android.settings.DATE_SETTINGS"
-                    ).map { (name, action) -> Item(name, null, false) { open(action, name) } }
-                    val allApps = infos.map { byPkg[it.activityInfo.packageName]!! } + Item("Settings", null, false) { open("android.settings.SETTINGS", "Settings") }
-                    addRow("", fav, 136, 100)
-                    addRow("Inputs", inputs, 180, 100)
-                    val per = maxOf(4, ((resources.displayMetrics.widthPixels / resources.displayMetrics.density - 120) / 126).toInt())
-                    allApps.chunked(per).forEachIndexed { i, c -> addRow(if (i == 0) "Apps" else "", c, 112, 80) }
-                    addRow("Settings", settings, 150, 70)
-                    firstTile?.requestFocus()
                 }
 
                 private fun appItem(r: ResolveInfo): Item {
                     val pm = packageManager
-                    val banner = r.activityInfo.loadBanner(pm)
-                    return Item(r.loadLabel(pm).toString(), banner ?: r.loadIcon(pm), banner != null) { launch(r.activityInfo.packageName) }
+                    return Item(r.loadLabel(pm).toString(), r.loadIcon(pm)) { launch(r.activityInfo.packageName) }
                 }
 
                 private fun launch(pkg: String) {
@@ -197,52 +324,52 @@ jobs:
                     }
                 }
 
-                private fun addRow(name: String, items: List<Item>, w: Int, h: Int) {
+                private fun addRow(name: String, items: List<Item>, size: Int) {
                     if (items.isEmpty()) return
                     if (name.isNotEmpty()) rows.addView(TextView(this).apply {
-                        text = name; textSize = 16f; setTextColor(0xD9FFFFFF.toInt()); typeface = font("sans-serif-medium")
-                        setPadding(dp(60), dp(8), 0, dp(2))
+                        text = name; textSize = 16f; setTextColor(0xB3FFFFFF.toInt()); typeface = font("sans-serif-medium")
+                        setPadding(dp(60), dp(12), 0, 0)
                     })
-                    val line = LinearLayout(this).apply { clipChildren = false; setPadding(dp(60), dp(8), dp(60), dp(10)) }
-                    items.forEach { line.addView(tile(it, w, h)) }
+                    val line = LinearLayout(this).apply { clipChildren = false; setPadding(dp(60), dp(14), dp(60), dp(14)) }
+                    items.forEach { line.addView(tile(it, size)) }
                     if (firstTile == null) firstTile = line.getChildAt(0)
                     rows.addView(HorizontalScrollView(this).apply {
                         isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(line)
                     })
                 }
 
-                private fun tile(item: Item, w: Int, h: Int): View {
-                    val radius = dp(14).toFloat()
+                private fun tile(item: Item, size: Int): View {
+                    val radius = dp(18).toFloat()
                     val ring = GradientDrawable().apply { cornerRadius = radius; setStroke(dp(3), Color.WHITE); setColor(Color.TRANSPARENT) }
-                    var label: TextView? = null
-                    return FrameLayout(this).apply {
+                    val card = FrameLayout(this).apply {
                         background = GradientDrawable().apply { cornerRadius = radius; setColor(0x2EFFFFFF) }
                         outlineProvider = object : ViewOutlineProvider() {
                             override fun getOutline(v: View, o: Outline) = o.setRoundRect(0, 0, v.width, v.height, radius)
                         }
-                        clipToOutline = true; isFocusable = true
-                        if (item.art != null) {
-                            addView(ImageView(context).apply {
-                                setImageDrawable(item.art)
-                                scaleType = if (item.wide) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
-                                if (!item.wide) setPadding(dp(28), dp(18), dp(28), dp(18))
-                            }, FrameLayout.LayoutParams(-1, -1))
-                            val lb = TextView(context).apply {
-                                text = item.title; textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-                                alpha = 0f; setShadowLayer(4f, 0f, 1f, Color.BLACK); setPadding(0, 0, 0, dp(6))
-                            }
-                            label = lb
-                            addView(lb, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
-                        } else addView(TextView(context).apply {
+                        clipToOutline = true
+                        if (item.art != null) addView(ImageView(context).apply {
+                            setImageDrawable(item.art); scaleType = ImageView.ScaleType.FIT_CENTER
+                            setPadding(dp(14), dp(14), dp(14), dp(14))
+                        }, FrameLayout.LayoutParams(-1, -1))
+                        else addView(TextView(context).apply {
                             text = item.title; textSize = 16f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = font("sans-serif-light")
                         }, FrameLayout.LayoutParams(-1, -1))
-                        layoutParams = LinearLayout.LayoutParams(dp(w), dp(h)).apply { marginEnd = dp(14) }
+                    }
+                    val label = TextView(this).apply {
+                        text = item.title; textSize = 14f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                        maxLines = 1; alpha = 0f; typeface = font("sans-serif-medium"); setPadding(0, dp(8), 0, 0)
+                    }
+                    return LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL; isFocusable = true; clipChildren = false
+                        addView(card, LinearLayout.LayoutParams(dp(size), dp(size)))
+                        addView(label, LinearLayout.LayoutParams(dp(size), -2))
+                        layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(16) }
                         setOnClickListener { item.go() }
                         setOnFocusChangeListener { v, f ->
-                            foreground = if (f) ring else null
-                            val s = if (f) 1.08f else 1f
+                            card.foreground = if (f) ring else null
+                            val s = if (f) 1.12f else 1f
                             v.animate().scaleX(s).scaleY(s).setDuration(180).setInterpolator(DecelerateInterpolator()).start()
-                            label?.alpha = if (f) 1f else 0f
+                            if (item.art != null) label.alpha = if (f) 1f else 0f
                         }
                     }
                 }
@@ -274,9 +401,36 @@ jobs:
                 @Deprecated("Launcher stays on Home")
                 override fun onBackPressed() {}
             }
-            EOF_3
+            EOF_5
+            mkdir -p $(dirname app/src/main/java/com/aeria/launcher/ShellHome.kt)
+            cat > app/src/main/java/com/aeria/launcher/ShellHome.kt <<'EOF_6'
+            package com.aeria.launcher
+
+            import java.net.InetAddress
+            import java.net.ServerSocket
+
+            // Runs as the ADB shell user (started from a computer). Opens Aeria instantly when asked.
+            object ShellHome {
+                @JvmStatic
+                fun main(args: Array<String>) {
+                    val srv = ServerSocket(38275, 5, InetAddress.getByName("127.0.0.1"))
+                    while (true) {
+                        val s = srv.accept()
+                        try {
+                            val cmd = s.getInputStream().bufferedReader().readLine()
+                            if (cmd == "home") {
+                                Runtime.getRuntime().exec(arrayOf("am", "start", "-n", "com.aeria.launcher/.MainActivity", "-f", "0x14000000")).waitFor()
+                            }
+                        } catch (e: Exception) {
+                        } finally {
+                            s.close()
+                        }
+                    }
+                }
+            }
+            EOF_6
             mkdir -p $(dirname app/src/main/res/drawable/banner.xml)
-            cat > app/src/main/res/drawable/banner.xml <<'EOF_4'
+            cat > app/src/main/res/drawable/banner.xml <<'EOF_7'
             <?xml version="1.0" encoding="utf-8"?>
             <vector xmlns:android="http://schemas.android.com/apk/res/android"
                 android:width="320dp" android:height="180dp" android:viewportWidth="320" android:viewportHeight="180">
@@ -286,9 +440,9 @@ jobs:
                 <path android:strokeColor="#E50914" android:strokeWidth="6" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M54,14 L30,90 M54,14 L78,90 M26,66 L82,66" />
                 </group>
             </vector>
-            EOF_4
+            EOF_7
             mkdir -p $(dirname app/src/main/res/drawable/icon.xml)
-            cat > app/src/main/res/drawable/icon.xml <<'EOF_5'
+            cat > app/src/main/res/drawable/icon.xml <<'EOF_8'
             <?xml version="1.0" encoding="utf-8"?>
             <vector xmlns:android="http://schemas.android.com/apk/res/android"
                 android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
@@ -296,21 +450,21 @@ jobs:
                 <path android:strokeColor="#E50914" android:strokeWidth="6" android:fillColor="#00000000" android:pathData="M54,54m-34,0a34,34 0 1,0 68,0a34,34 0 1,0 -68,0" />
                 <path android:strokeColor="#E50914" android:strokeWidth="6" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M54,14 L30,90 M54,14 L78,90 M26,66 L82,66" />
             </vector>
-            EOF_5
+            EOF_8
             mkdir -p $(dirname build.gradle.kts)
-            cat > build.gradle.kts <<'EOF_6'
+            cat > build.gradle.kts <<'EOF_9'
             plugins {
                 id("com.android.application") version "8.5.2" apply false
                 id("org.jetbrains.kotlin.android") version "1.9.24" apply false
             }
-            EOF_6
+            EOF_9
             mkdir -p $(dirname settings.gradle.kts)
-            cat > settings.gradle.kts <<'EOF_7'
+            cat > settings.gradle.kts <<'EOF_10'
             pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
             dependencyResolutionManagement { repositories { google(); mavenCentral() } }
             rootProject.name = "Aeria"
             include(":app")
-            EOF_7
+            EOF_10
       - run: gradle assembleDebug
       - uses: softprops/action-gh-release@v2
         with:
