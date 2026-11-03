@@ -84,8 +84,12 @@ jobs:
             import android.app.Activity
             import android.content.Context
             import android.content.Intent
+            import android.content.pm.ResolveInfo
+            import android.graphics.Canvas
             import android.graphics.Color
             import android.graphics.Outline
+            import android.graphics.Paint
+            import android.graphics.RectF
             import android.graphics.Typeface
             import android.graphics.drawable.Drawable
             import android.graphics.drawable.GradientDrawable
@@ -98,50 +102,43 @@ jobs:
             import android.widget.*
 
             class MainActivity : Activity() {
-                private class Item(val title: String, val sub: String, val art: Drawable?, val wide: Boolean, val go: () -> Unit)
+                private class Item(val title: String, val art: Drawable?, val wide: Boolean, val go: () -> Unit)
 
-                private val bg = 0xFF141414.toInt()
-                private val red = 0xFFE50914.toInt()
-                private lateinit var heroTitle: TextView
-                private lateinit var heroSub: TextView
-                private lateinit var heroArt: ImageView
                 private lateinit var rows: LinearLayout
                 private var firstTile: View? = null
+                private val prefs by lazy { getSharedPreferences("aeria", MODE_PRIVATE) }
                 private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
                 private fun font(w: String) = Typeface.create(w, Typeface.NORMAL)
 
                 override fun onCreate(b: Bundle?) {
                     super.onCreate(b)
-                    val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
-                    val hero = FrameLayout(this)
-                    heroArt = ImageView(this)
-                    hero.addView(heroArt, FrameLayout.LayoutParams(dp(560), -1, Gravity.END))
-                    hero.addView(View(this).apply {
-                        background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(bg, bg, 0x00141414))
-                    }, FrameLayout.LayoutParams(-1, -1))
-                    hero.addView(View(this).apply {
-                        background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x00141414, bg))
-                    }, FrameLayout.LayoutParams(-1, dp(70), Gravity.BOTTOM))
-                    hero.addView(TextView(this).apply {
-                        text = "Aeria"; textSize = 26f; setTextColor(red); typeface = font("sans-serif-black"); letterSpacing = 0.04f
-                    }, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = dp(56); topMargin = dp(28) })
-                    hero.addView(TextClock(this).apply {
-                        format12Hour = "h:mm"; format24Hour = "H:mm"; textSize = 26f
-                        setTextColor(0xCCFFFFFF.toInt()); typeface = font("sans-serif-light")
-                    }, FrameLayout.LayoutParams(-2, -2, Gravity.END).apply { rightMargin = dp(56); topMargin = dp(28) })
-                    heroTitle = TextView(this).apply { textSize = 46f; setTextColor(Color.WHITE); typeface = font("sans-serif-medium"); maxLines = 2 }
-                    heroSub = TextView(this).apply { textSize = 18f; setTextColor(0xB3FFFFFF.toInt()); typeface = font("sans-serif-light") }
-                    val pill = TextView(this).apply {
-                        text = "Press OK to open"; textSize = 15f; setTextColor(Color.WHITE); typeface = font("sans-serif-medium")
-                        setPadding(dp(18), dp(8), dp(18), dp(8))
-                        background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(red) }
+                    val root = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.TOP_BOTTOM,
+                            intArrayOf(0xFF0E1A3D.toInt(), 0xFF070B1A.toInt(), 0xFF03050C.toInt())
+                        )
                     }
-                    hero.addView(LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM; setPadding(dp(56), 0, dp(300), dp(20))
-                        addView(heroTitle); addView(heroSub)
-                        addView(pill, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
-                    }, FrameLayout.LayoutParams(-1, -1))
-                    root.addView(hero, LinearLayout.LayoutParams(-1, dp(250)))
+                    val bar = FrameLayout(this)
+                    bar.addView(TextView(this).apply {
+                        text = "Home"; textSize = 22f; setTextColor(Color.WHITE); typeface = font("sans-serif-medium")
+                    }, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL).apply { leftMargin = dp(60) })
+                    val right = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+                    right.addView(TextClock(this).apply {
+                        format12Hour = "h:mm"; format24Hour = "H:mm"; textSize = 20f
+                        setTextColor(0xE6FFFFFF.toInt()); typeface = font("sans-serif-light")
+                    })
+                    right.addView(IconView(false), LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginStart = dp(18) })
+                    right.addView(IconView(true).apply {
+                        isFocusable = true
+                        setOnClickListener { open("android.settings.SETTINGS", "Settings") }
+                        setOnFocusChangeListener { v, f ->
+                            v.background = if (f) GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(2), Color.WHITE) } else null
+                            v.invalidate()
+                        }
+                    }, LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginStart = dp(14) })
+                    bar.addView(right, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(52) })
+                    root.addView(bar, LinearLayout.LayoutParams(-1, dp(64)))
                     rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(0, 0, 0, dp(40)) }
                     root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled = false; clipChildren = false; addView(rows) }, LinearLayout.LayoutParams(-1, 0, 1f))
                     setContentView(root)
@@ -149,90 +146,129 @@ jobs:
 
                 override fun onResume() {
                     super.onResume()
-                    rows.removeAllViews()
-                    firstTile = null
+                    rows.removeAllViews(); firstTile = null
                     val pm = packageManager
-                    val apps = listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)
+                    val infos = listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)
                         .flatMap { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(it), 0) }
                         .distinctBy { it.activityInfo.packageName }
                         .filter { it.activityInfo.packageName != packageName }
                         .sortedBy { it.loadLabel(pm).toString().lowercase() }
-                        .map { r ->
-                            val banner = r.activityInfo.loadBanner(pm)
-                            Item(r.loadLabel(pm).toString(), "Open app", banner ?: r.loadIcon(pm), banner != null) {
-                                pm.getLaunchIntentForPackage(r.activityInfo.packageName)?.let { startActivity(it) }
-                            }
-                        }
+                    val byPkg = infos.associate { it.activityInfo.packageName to appItem(it) }
+                    val keys = listOf("netflix", "youtube", "disney", "avod", "apple", "wbd", "max", "spotify", "hulu", "plex")
+                    fun rank(p: String) = keys.indexOfFirst { p.contains(it) }.let { if (it < 0) 99 else it }
+                    val recent = prefs.getString("recent", "")!!.split(",").filter { byPkg.containsKey(it) }
+                    val fav = (recent + infos.map { it.activityInfo.packageName }.sortedBy { rank(it) })
+                        .distinct().take(6).mapNotNull { byPkg[it] }
                     val tvm = getSystemService(Context.TV_INPUT_SERVICE) as TvInputManager
                     val inputs = tvm.tvInputList.filter { it.isPassthroughInput }.map { i ->
-                        Item(i.loadLabel(this).toString(), "Switch input", null, false) {
+                        Item(i.loadLabel(this).toString(), null, false) {
                             startActivity(Intent(this, InputActivity::class.java).putExtra("id", i.id))
                         }
                     }
                     val settings = listOf(
-                        "Settings" to "android.settings.SETTINGS", "Wi-Fi" to "android.settings.WIFI_SETTINGS",
-                        "Display" to "android.settings.DISPLAY_SETTINGS", "Sound" to "android.settings.SOUND_SETTINGS",
-                        "Bluetooth" to "android.settings.BLUETOOTH_SETTINGS", "Date and time" to "android.settings.DATE_SETTINGS"
-                    ).map { (name, action) ->
-                        Item(name, "Open settings", null, false) {
-                            try { startActivity(Intent(action)) } catch (e: Exception) {
-                                Toast.makeText(this, "$name isn't available on this TV", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                    val per = maxOf(3, ((resources.displayMetrics.widthPixels / resources.displayMetrics.density - 112) / 206).toInt())
-                    apps.chunked(per).forEachIndexed { i, c -> addRow(if (i == 0) "Apps" else "", c) }; addRow("Inputs", inputs); addRow("Settings", settings)
+                        "Wi-Fi" to "android.settings.WIFI_SETTINGS", "Display" to "android.settings.DISPLAY_SETTINGS",
+                        "Sound" to "android.settings.SOUND_SETTINGS", "Bluetooth" to "android.settings.BLUETOOTH_SETTINGS",
+                        "Date and time" to "android.settings.DATE_SETTINGS"
+                    ).map { (name, action) -> Item(name, null, false) { open(action, name) } }
+                    val allApps = infos.map { byPkg[it.activityInfo.packageName]!! } + Item("Settings", null, false) { open("android.settings.SETTINGS", "Settings") }
+                    addRow("", fav, 136, 100)
+                    addRow("Inputs", inputs, 180, 100)
+                    val per = maxOf(4, ((resources.displayMetrics.widthPixels / resources.displayMetrics.density - 120) / 126).toInt())
+                    allApps.chunked(per).forEachIndexed { i, c -> addRow(if (i == 0) "Apps" else "", c, 112, 80) }
+                    addRow("Settings", settings, 150, 70)
                     firstTile?.requestFocus()
                 }
 
-                private fun addRow(name: String, items: List<Item>) {
+                private fun appItem(r: ResolveInfo): Item {
+                    val pm = packageManager
+                    val banner = r.activityInfo.loadBanner(pm)
+                    return Item(r.loadLabel(pm).toString(), banner ?: r.loadIcon(pm), banner != null) { launch(r.activityInfo.packageName) }
+                }
+
+                private fun launch(pkg: String) {
+                    val recent = (listOf(pkg) + prefs.getString("recent", "")!!.split(",").filter { it.isNotEmpty() && it != pkg }).take(6)
+                    prefs.edit().putString("recent", recent.joinToString(",")).apply()
+                    packageManager.getLaunchIntentForPackage(pkg)?.let { startActivity(it) }
+                }
+
+                private fun open(action: String, name: String) {
+                    try { startActivity(Intent(action)) } catch (e: Exception) {
+                        Toast.makeText(this, "$name isn't available on this TV", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                private fun addRow(name: String, items: List<Item>, w: Int, h: Int) {
                     if (items.isEmpty()) return
                     if (name.isNotEmpty()) rows.addView(TextView(this).apply {
-                        text = name; textSize = 20f; setTextColor(0xE6FFFFFF.toInt()); typeface = font("sans-serif-medium")
-                        setPadding(dp(56), dp(10), 0, dp(6))
+                        text = name; textSize = 16f; setTextColor(0xD9FFFFFF.toInt()); typeface = font("sans-serif-medium")
+                        setPadding(dp(60), dp(8), 0, dp(2))
                     })
-                    val line = LinearLayout(this).apply { clipChildren = false; setPadding(dp(56), dp(10), dp(56), dp(14)) }
-                    items.forEach { line.addView(tile(it)) }
+                    val line = LinearLayout(this).apply { clipChildren = false; setPadding(dp(60), dp(8), dp(60), dp(10)) }
+                    items.forEach { line.addView(tile(it, w, h)) }
                     if (firstTile == null) firstTile = line.getChildAt(0)
                     rows.addView(HorizontalScrollView(this).apply {
                         isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(line)
                     })
                 }
 
-                private fun tile(item: Item): View {
-                    val radius = dp(12).toFloat()
+                private fun tile(item: Item, w: Int, h: Int): View {
+                    val radius = dp(14).toFloat()
                     val ring = GradientDrawable().apply { cornerRadius = radius; setStroke(dp(3), Color.WHITE); setColor(Color.TRANSPARENT) }
+                    var label: TextView? = null
                     return FrameLayout(this).apply {
-                        background = GradientDrawable().apply { cornerRadius = radius; setColor(0xFF2B2B2B.toInt()) }
+                        background = GradientDrawable().apply { cornerRadius = radius; setColor(0x2EFFFFFF) }
                         outlineProvider = object : ViewOutlineProvider() {
                             override fun getOutline(v: View, o: Outline) = o.setRoundRect(0, 0, v.width, v.height, radius)
                         }
                         clipToOutline = true; isFocusable = true
-                        if (item.art != null) addView(ImageView(context).apply {
-                            setImageDrawable(item.art)
-                            scaleType = if (item.wide) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
-                            if (!item.wide) setPadding(dp(40), dp(20), dp(40), dp(20))
+                        if (item.art != null) {
+                            addView(ImageView(context).apply {
+                                setImageDrawable(item.art)
+                                scaleType = if (item.wide) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
+                                if (!item.wide) setPadding(dp(28), dp(18), dp(28), dp(18))
+                            }, FrameLayout.LayoutParams(-1, -1))
+                            val lb = TextView(context).apply {
+                                text = item.title; textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                                alpha = 0f; setShadowLayer(4f, 0f, 1f, Color.BLACK); setPadding(0, 0, 0, dp(6))
+                            }
+                            label = lb
+                            addView(lb, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+                        } else addView(TextView(context).apply {
+                            text = item.title; textSize = 16f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = font("sans-serif-light")
                         }, FrameLayout.LayoutParams(-1, -1))
-                        else addView(TextView(context).apply {
-                            text = item.title; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = font("sans-serif-light")
-                        }, FrameLayout.LayoutParams(-1, -1))
-                        layoutParams = LinearLayout.LayoutParams(dp(190), dp(107)).apply { marginEnd = dp(16) }
+                        layoutParams = LinearLayout.LayoutParams(dp(w), dp(h)).apply { marginEnd = dp(14) }
                         setOnClickListener { item.go() }
                         setOnFocusChangeListener { v, f ->
                             foreground = if (f) ring else null
                             val s = if (f) 1.08f else 1f
                             v.animate().scaleX(s).scaleY(s).setDuration(180).setInterpolator(DecelerateInterpolator()).start()
-                            if (f) show(item)
+                            label?.alpha = if (f) 1f else 0f
                         }
                     }
                 }
 
-                private fun show(item: Item) {
-                    heroTitle.text = item.title; heroSub.text = item.sub
-                    heroArt.setImageDrawable(item.art)
-                    heroArt.scaleType = if (item.wide) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
-                    heroArt.setPadding(if (item.wide) 0 else dp(120), 0, if (item.wide) 0 else dp(120), 0)
-                    heroArt.alpha = 0f; heroArt.animate().alpha(0.95f).setDuration(300).start()
+                private inner class IconView(private val gear: Boolean) : View(this@MainActivity) {
+                    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        style = Paint.Style.STROKE; strokeWidth = dp(2).toFloat(); strokeCap = Paint.Cap.ROUND
+                    }
+                    override fun onDraw(c: Canvas) {
+                        p.color = if (isFocused) Color.WHITE else 0xCCFFFFFF.toInt()
+                        val cx = width / 2f; val cy = height / 2f; val r = minOf(width, height) / 2f - dp(5)
+                        if (gear) {
+                            c.drawCircle(cx, cy, r * 0.5f, p); c.drawCircle(cx, cy, r * 0.2f, p)
+                            for (i in 0 until 8) {
+                                val a = Math.toRadians(i * 45.0); val dx = Math.cos(a).toFloat(); val dy = Math.sin(a).toFloat()
+                                c.drawLine(cx + dx * r * 0.65f, cy + dy * r * 0.65f, cx + dx * r, cy + dy * r, p)
+                            }
+                        } else {
+                            val base = cy + r * 0.5f
+                            for (k in 1..3) {
+                                val rr = r * k / 3f
+                                c.drawArc(RectF(cx - rr, base - rr, cx + rr, base + rr), 225f, 90f, false, p)
+                            }
+                            p.style = Paint.Style.FILL; c.drawCircle(cx, base, dp(2).toFloat(), p); p.style = Paint.Style.STROKE
+                        }
+                    }
                 }
 
                 @Deprecated("Launcher stays on Home")
